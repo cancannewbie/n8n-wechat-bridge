@@ -1,0 +1,7 @@
+{
+  "db_keys": {
+    "message_db": "HEX_KEY_FROM_extract_keys"
+  },
+  "image_aes_key": "HEX_OR_BASE64_FROM_capture_image_key",
+  "note": "Copy to all_keys.json after capturing. Never commit real keys."
+}

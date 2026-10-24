@@ -1,0 +1,2 @@
+# One candidate AES image key per line (from start_capture_image_key.bat)
+# EXAMPLE_ONLY_DO_NOT_USE

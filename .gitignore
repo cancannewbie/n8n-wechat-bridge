@@ -1,0 +1,56 @@
+# secrets & runtime state
+wechat_readonly/state/all_keys.json
+wechat_readonly/state/found_image_keys.txt
+wechat_readonly/state/found_image_keys*.txt
+!wechat_readonly/state/found_image_keys.example.txt
+wechat_readonly/state/monitor_state.json
+**/config.json
+!**/config.example.json
+
+# decrypted & personal media
+wechat_readonly/temp_images/**
+!wechat_readonly/temp_images/.gitkeep
+wechat_readonly/decrypted/**
+!wechat_readonly/decrypted/.gitkeep
+wechat_readonly/logs/**
+!wechat_readonly/logs/.gitkeep
+
+# runtime dirs
+logs/**
+!logs/.gitkeep
+inbox/**
+!inbox/.gitkeep
+processed/**
+!processed/.gitkeep
+output/**
+!output/.gitkeep
+output/sales_images/
+
+# excel with possible customer data / embedded images
+*.xlsx
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.env.*
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.bak
+*.bak_*
+
+# local scratch
+node_*.txt
+_*.py
+_*.js
+_*.json
+wf_preview.json
+*.zip

@@ -1,0 +1,23 @@
+{
+  "webhook_url": "http://YOUR_N8N_HOST:5678/webhook/wechat-image",
+  "source": "wechat",
+  "chat_type": "group",
+  "group_allowlist": [],
+  "sender_allowlist": [],
+  "watch_dir": "",
+  "processed_dir": "",
+  "poll_seconds": 2,
+  "default_group_name": "",
+  "default_sender_name": "folder-drop",
+  "image_extensions": [
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+    ".bmp"
+  ],
+  "request_timeout_seconds": 60,
+  "append_api_url": "http://127.0.0.1:8787/append",
+  "results_xlsx": ""
+}

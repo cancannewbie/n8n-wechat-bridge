@@ -1,0 +1,1169 @@
+{
+  "name": "Excel 解析 → Minimax",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 生产入口 + 本地表格\n\n表单：\n- 图片 http://YOUR_N8N_HOST:5678/form/image-recognize\n- 表格 http://YOUR_N8N_HOST:5678/form/excel-parse\n\n微信 Webhook：\nPOST http://YOUR_N8N_HOST:5678/webhook/wechat-image\n\n识别全文写入本机 Excel：\nC:\\\\n8n-wechat-bridge\\\\output\\\\results.xlsx\n追加服务：start_append_api.bat → http://YOUR_N8N_HOST:5678/append\n\nTelegram 只发短状态（成功/失败）；详情看表格。\n白名单：节点「微信来源判断」CONFIG。",
+        "height": 560,
+        "width": 560,
+        "color": 5
+      },
+      "id": "3c7ec9e4-a22f-443f-b3c2-944debad1c72",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -624,
+        -192
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "fileFormat": "={{ $json.fileFormat || \"xlsx\" }}",
+        "options": {
+          "headerRow": true,
+          "rawData": false
+        }
+      },
+      "id": "469fdaf4-580d-48bb-99fd-891141693bb3",
+      "name": "Spreadsheet File",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "position": [
+        848,
+        616
+      ],
+      "typeVersion": 2,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const MAX_ROWS = 50;\nconst MAX_CHARS = 12000;\nconst all = items.map((i) => i.json);\nconst sample = all.slice(0, MAX_ROWS);\nlet text = JSON.stringify(sample, null, 2);\nif (text.length > MAX_CHARS) text = text.slice(0, MAX_CHARS) + '\\n...[truncated]';\n\nlet instruction = '';\ntry {\n  const v = $('规范化表单表格').first().json.instruction;\n  if (v) instruction = String(v).trim();\n} catch (e) {}\n\nconst prompt = [\n  '你是表格解析助手，面向普通人阅读。',\n  '下面是表格文件转成的 JSON 行数据（可能来自 xlsx/xls/csv）。',\n  '请用简体中文输出「纯文本报告」，不要输出 JSON，不要使用 markdown 代码围栏，不要输出思考过程。',\n  '根据表格真实内容灵活组织，不要套固定发票模板。',\n  '建议结构（按需取舍）：',\n  '',\n  '【解析结果】',\n  '表格概要：…',\n  '主要字段：…',\n  '数据条数：…',\n  '要点：…',\n  '明细摘要：…',\n  '',\n  instruction ? ('用户补充说明（请重点关注）：' + instruction) : '',\n  'DATA:',\n  text,\n].filter(Boolean).join('\\n');\n\nreturn [{ json: { rowCount: all.length, sampleCount: sample.length, instruction, prompt } }];"
+      },
+      "id": "65bb1e41-020a-401b-99cd-3d93ab0b0e05",
+      "name": "准备 Prompt",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1072,
+        736
+      ],
+      "typeVersion": 2,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.minimaxi.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"MiniMax-M2.5\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a careful Excel data parsing assistant. Always reply with valid JSON when asked.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify($json.prompt) }}\n    }\n  ],\n  \"temperature\": 0.2\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "5b50bec5-06b5-4dd4-b0fb-ca250c5e2a96",
+      "name": "Minimax Chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1296,
+        880
+      ],
+      "typeVersion": 4.4,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Minimax API Key (paste key here)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = items[0].json;\nlet content = '';\nif (resp.choices && resp.choices[0] && resp.choices[0].message) {\n  content = resp.choices[0].message.content || '';\n} else if (typeof resp.content === 'string') {\n  content = resp.content;\n} else {\n  content = JSON.stringify(resp);\n}\ncontent = String(content)\n  .replace(/^[\\s\\S]*?<\\/think>/i, '')\n  .replace(/<think>[\\s\\S]*?<\\/think>/ig, '')\n  .replace(/```[a-zA-Z]*\\n?/g, '')\n  .replace(/```/g, '')\n  .trim();\nlet readableText = content;\nif (!readableText.includes('【解析结果】')) readableText = '【解析结果】\\n' + readableText;\nconst readableHtml = '<div style=\"white-space:pre-wrap;font-family:system-ui,sans-serif;font-size:16px;line-height:1.7;\">'\n  + readableText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\n/g,'<br>')\n  + '</div>';\nreturn [{ json: { report: readableText, readableText, readableHtml, modelRaw: content, usage: resp.usage || null, model: resp.model || null } }];"
+      },
+      "id": "89d98117-9e63-4139-9874-32650f730cbf",
+      "name": "整理结果",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1520,
+        976
+      ],
+      "typeVersion": 2,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = items[0];\nif (!item.binary || !item.binary.data) {\n  throw new Error('FMT_INVALID: 缺少图片 binary.data，请从表单上传图片。');\n}\nconst meta = item.binary.data;\nconst buf = await this.helpers.getBinaryDataBuffer(0, 'data');\n\nfunction detectFmt(buf) {\n  if (!buf || buf.length < 12) return 'bin';\n  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';\n  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';\n  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'gif';\n  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46\n      && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'webp';\n  if (buf[0] === 0x77 && buf[1] === 0x78 && buf[2] === 0x67 && buf[3] === 0x66) return 'wxgf';\n  if (buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0x00 && buf[3] === 0x01) return 'hevc';\n  if (buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0x01) return 'hevc';\n  if (buf[0] === 0x42 && buf[1] === 0x4d) return 'bmp';\n  return 'bin';\n}\nconst MIME = { jpg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };\nconst fmt = detectFmt(buf);\nif (!MIME[fmt]) {\n  throw new Error(\n    'FMT_INVALID: 图片魔数不是 JPEG/PNG/GIF/WEBP（检测为 ' + fmt + '，声称 mime='\n    + (meta.mimeType || '') + '，字节=' + buf.length\n    + '）。模型无法识别。请确认微信监控已把 HEVC/wxgf 转成 JPEG 后重发。'\n  );\n}\nconst mime = MIME[fmt];\nconst b64 = buf.toString('base64');\nif (!b64 || b64.length < 32) {\n  throw new Error('FMT_INVALID: 读取图片二进制失败（base64 过短）。');\n}\nconst dataUrl = 'data:' + mime + ';base64,' + b64;\nconst extra = (item.json.instruction || '').toString().trim();\n\nconst prompt = [\n  '你是通用图片理解助手。用户可能上传截图、照片、说明书页、风景、设计稿等，不要预设题型。',\n  '即使图片看起来像票据，也只用简洁中文写「看见了什么」。',\n  '硬性要求：',\n  '1) 不要假设是发票/收据/合同；不要编造公司名、发票号、金额字段。',\n  '2) 没有的信息就省略该段落，不要写「未识别」。',\n  '3) 不要输出 JSON；不要使用 markdown 代码围栏；不要写思考过程。',\n  '4) 可见文字尽量忠实摘录；看不清就注明看不清，不要编造。',\n  '5) 用简体中文字段；必要时使用列表，不要时使用。',\n  '请按下列结构：',\n  '图片类型：',\n  '内容概述：',\n  '可见文字：',\n  '关键信息：',\n  '其他细节：',\n  extra ? ('用户额外说明（请重点关注）：' + extra) : '',\n].filter(Boolean).join('\\n');\n\nconst requestBody = {\n  model: 'MiniMax-M3',\n  thinking: { type: 'disabled' },\n  messages: [\n    {\n      role: 'user',\n      content: [\n        { type: 'text', text: prompt },\n        { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },\n      ],\n    },\n  ],\n  temperature: 0.2,\n  max_completion_tokens: 2500,\n};\n\nconst deepseekRequestBody = {\n  model: 'deepseek-flash',\n  messages: requestBody.messages,\n  temperature: 0.2,\n  max_tokens: 2500,\n};\n\nconst ext = fmt === 'jpg' ? 'jpg' : fmt;\nconst rawName = meta.fileName || 'image';\nconst fileName = /\\.(hevc|bin|dat|wxgf|bmp)$/i.test(rawName)\n  ? rawName.replace(/\\.(hevc|bin|dat|wxgf|bmp)$/i, '.' + ext)\n  : (rawName.includes('.') ? rawName : rawName + '.' + ext);\n\nreturn [{\n  json: {\n    source: item.json.source || meta.fileName || 'image',\n    instruction: extra,\n    mimeType: mime,\n    bytes: buf.length,\n    imageFormat: fmt,\n    requestBody,\n    deepseekRequestBody,\n  },\n  binary: {\n    data: {\n      data: b64,\n      mimeType: mime,\n      fileName,\n      fileExtension: ext,\n    },\n  },\n}];\n"
+      },
+      "id": "4ab82391-9d4e-48d1-8926-c7f6107249e7",
+      "name": "准备图片请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1072,
+        -224
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.minimaxi.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "168f30e3-095c-4464-b5e4-1c7e43a81627",
+      "name": "Minimax 识图",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1296,
+        -224
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Minimax API Key (paste key here)"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const _fromDeepSeek = (() => { try { return $('DeepSeek 识图').isExecuted; } catch (e) { return false; } })();\nconst _provider = _fromDeepSeek ? 'deepseek' : 'minimax';\nconst resp = items[0].json;\nlet content = '';\nif (resp.choices && resp.choices[0] && resp.choices[0].message) {\n  content = resp.choices[0].message.content || '';\n} else if (typeof resp.content === 'string') {\n  content = resp.content;\n} else {\n  content = JSON.stringify(resp);\n}\n\ncontent = String(content)\n  .replace(/^[\\s\\S]*?<\\/think>/i, '')\n  .replace(/<think>[\\s\\S]*?<\\/think>/ig, '')\n  .replace(/```[a-zA-Z]*\\n?/g, '')\n  .replace(/```/g, '')\n  .trim();\n\nlet readableText = content;\nlet imageJson = null;\n\n// If model still returned JSON, convert to flexible Chinese prose (NO invoice field forcing)\ntry {\n  const m = content.match(/\\{[\\s\\S]*\\}/);\n  if (m) {\n    const obj = JSON.parse(m[0]);\n    imageJson = obj;\n    const lines = ['【识别结果】'];\n    const pushKV = (label, val) => {\n      if (val == null) return;\n      if (Array.isArray(val)) {\n        const t = val.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).filter(Boolean).join('\\n');\n        if (t) lines.push(label + '：\\n' + t);\n      } else if (typeof val === 'object') {\n        const entries = Object.entries(val).filter(([, v]) => v != null && String(v).trim() !== '');\n        if (entries.length) {\n          lines.push(label + '：');\n          for (const [k, v] of entries) lines.push('- ' + k + '：' + v);\n        }\n      } else if (String(val).trim() !== '') {\n        lines.push(label + '：' + String(val));\n      }\n    };\n\n    // Generic mappings only\n    pushKV('图片类型', obj.image_type || obj.type || obj.category || obj['图片类型']);\n    pushKV('内容概述', obj.summary || obj.overview || obj.description || obj['内容概述'] || obj['摘要']);\n    pushKV('可见文字', obj.texts || obj.ocr || obj.text || obj['可见文字']);\n    pushKV('关键信息', obj.fields || obj.key_info || obj.info || obj['关键信息']);\n    pushKV('其他细节', obj.insights || obj.details || obj.notes || obj['其他细节'] || obj['备注']);\n\n    // Any other top-level keys not already used\n    const used = new Set(['image_type','type','category','图片类型','summary','overview','description','内容概述','摘要','texts','ocr','text','可见文字','fields','key_info','info','关键信息','insights','details','notes','其他细节','备注']);\n    for (const [k, v] of Object.entries(obj)) {\n      if (used.has(k)) continue;\n      pushKV(k, v);\n    }\n\n    if (lines.length > 1) readableText = lines.join('\\n');\n  }\n} catch (e) {}\n\nreadableText = String(readableText).trim();\nif (!readableText.startsWith('【识别结果】')) {\n  readableText = '【识别结果】\\n' + readableText;\n}\n\n// Remove rigid empty invoice-y leftovers if model echoed them\nreadableText = readableText\n  .split('\\n')\n  .filter((line) => {\n    const s = line.trim();\n    if (!s) return true;\n    // drop lines that are pure \"未识别\" placeholders\n    if (/^(公司|发票号|单号|日期|金额|明细|其它字段|备注)\\s*[:：]\\s*(未识别)?\\s*$/.test(s)) return false;\n    if (/[:：]\\s*未识别\\s*$/.test(s) && /^(公司|发票号|发票号 \\/ 单号|单号|日期|金额|明细|其它字段)/.test(s)) return false;\n    return true;\n  })\n  .join('\\n')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\nconst readableHtml = '<div style=\"white-space:pre-wrap;font-family:system-ui,sans-serif;font-size:16px;line-height:1.7;\">'\n  + readableText\n      .replace(/&/g, '&amp;')\n      .replace(/</g, '&lt;')\n      .replace(/>/g, '&gt;')\n      .replace(/\\n/g, '<br>')\n  + '</div>';\n\nreturn [{\n  json: {\n    report: readableText,\n    readableText,\n    readableHtml,\n    imageRaw: content,\n    imageJson,\n    usage: resp.usage || null,\n    model: resp.model || null,\n    provider: _provider,\n  },\n}];"
+      },
+      "id": "78fc0d67-0606-470d-be54-37db9050a4b0",
+      "name": "整理识图结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        -224
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "formTitle": "上传图片识别",
+        "formDescription": "选择一张图片提交，将由 MiniMax-M3 识别文字与关键字段。请在同一局域网访问本页。",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "上传图片",
+              "fieldType": "file",
+              "fieldName": "image",
+              "multipleFiles": false,
+              "acceptFileTypes": ".png, .jpg, .jpeg, .webp, .gif",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "补充说明（可选）",
+              "fieldName": "instruction",
+              "placeholder": "例如：只要发票号和金额"
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "buttonLabel": "开始识别",
+          "path": "image-recognize"
+        },
+        "responseMode": "lastNode"
+      },
+      "id": "0007d77c-de0e-4984-ab1d-7c4525758d66",
+      "name": "表单上传识图",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        624,
+        1120
+      ],
+      "webhookId": "7066057c072949d7928475073315e266"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = items[0];\nconst bins = item.binary || {};\nconst keys = Object.keys(bins);\nif (!keys.length) {\n  throw new Error('请在表单中选择并上传一张图片');\n}\nconst key = keys.includes('image') ? 'image' : keys[0];\n// Keep original binary metadata (filesystem-v2 id). Do NOT rebuild from bin.data string.\nconst instruction =\n  item.json.instruction ||\n  item.json['补充说明'] ||\n  item.json['extra'] ||\n  '';\nreturn [{\n  json: {\n    source: (bins[key] && bins[key].fileName) || key,\n    instruction: String(instruction || ''),\n    formField: key,\n  },\n  binary: {\n    data: bins[key],\n  },\n}];"
+      },
+      "id": "8838b7df-49ad-4537-83ae-f5fc8adc4a87",
+      "name": "规范化表单图片",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        848,
+        1120
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.telegramText || \"【识别成功】已写入本地表格\" }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "261b9840-0a68-4352-a03b-4474b48a364d",
+      "name": "Telegram 推送识图",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1744,
+        424
+      ],
+      "webhookId": "c072ca99-7781-4644-983e-8b28f76229bc",
+      "retryOnFail": false,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Telegram Bot (recognize push)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.telegramText || \"【解析成功】已写入本地表格\" }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "3612e458-eb24-40fc-baa8-66aaa6a1e89c",
+      "name": "Telegram 推送表格",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1744,
+        1120
+      ],
+      "webhookId": "af3016b1-30df-443b-a5c2-44c954381f73",
+      "retryOnFail": false,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Telegram Bot (recognize push)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "formTitle": "上传表格解析",
+        "formDescription": "上传 Excel/CSV，将解析为中文报告。请在同一局域网访问。不要使用 form-test 测试地址。",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "上传表格",
+              "fieldType": "file",
+              "fieldName": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": ".xlsx, .xls, .csv",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "补充说明（可选）",
+              "fieldName": "instruction",
+              "placeholder": "例如：重点看总分和城市分布"
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "buttonLabel": "开始解析",
+          "path": "excel-parse",
+          "respondWithOptions": {
+            "values": {
+              "formSubmittedText": "已收到表格，正在解析。结果将发送到 Telegram。"
+            }
+          }
+        }
+      },
+      "id": "6e61c5d7-dec7-4ffd-a664-75051c0352e5",
+      "name": "表单上传表格",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        400,
+        544
+      ],
+      "webhookId": "966aa243ae8142449b872ee1c86ccacb"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = items[0];\nconst bins = item.binary || {};\nconst keys = Object.keys(bins);\nif (!keys.length) throw new Error('请上传表格文件（xlsx / xls / csv）');\nconst key = keys.includes('file') ? 'file' : keys[0];\nconst bin = bins[key];\n// Keep filesystem-v2 metadata intact\nconst fileName = (bin.fileName || '').toLowerCase();\nconst mime = (bin.mimeType || '').toLowerCase();\nlet fileFormat = 'xlsx';\nif (fileName.endsWith('.csv') || mime.includes('csv') || mime.includes('text/plain')) fileFormat = 'csv';\nelse if (fileName.endsWith('.xls') && !fileName.endsWith('.xlsx')) fileFormat = 'xls';\nelse if (fileName.endsWith('.xlsx') || mime.includes('spreadsheetml')) fileFormat = 'xlsx';\n\nconst instruction = item.json.instruction || item.json['补充说明'] || '';\nreturn [{\n  json: {\n    source: bin.fileName || key,\n    instruction: String(instruction || ''),\n    fileFormat,\n    formField: key,\n  },\n  binary: { data: bin },\n}];"
+      },
+      "id": "f87fd318-cdac-4da2-ab5e-5fc5a65cd86d",
+      "name": "规范化表单表格",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        544
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {},
+      "id": "af614185-db32-4a57-9f55-99853df17b7d",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        1520,
+        1312
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst raw = items[0].json || {};\nconst itemError = items[0].error;\nconst exec = raw.execution || {};\n\nfunction formatErr(val) {\n  if (val == null || val === '') return '';\n  if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {\n    const s = String(val).trim();\n    return s === '[object Object]' ? '' : s;\n  }\n  if (typeof val === 'object') {\n    if (val.message) return formatErr(val.message) || formatErr(val.description) || formatErr(val.error);\n    if (val.error && val.error !== val) return formatErr(val.error);\n    try { return JSON.stringify(val).slice(0, 160); } catch (e) { return ''; }\n  }\n  return String(val);\n}\n\nfunction classify(msg) {\n  const s = String(msg || '');\n  if (/FMT_NO_FFMPEG/i.test(s)) return 'FMT_NO_FFMPEG';\n  if (/FMT_INVALID|魔数|wxgf|HEVC|不是 JPEG|格式无法|invalid.?image|unsupported.?image/i.test(s)) return 'FMT_INVALID';\n  if (/429|rate.?limit|too many requests|限流/i.test(s)) return 'MODEL_RATE_LIMIT';\n  if (/ECONNREFUSED|8787|append_api|写表服务/i.test(s)) return 'APPEND_DOWN';\n  if (/DECRYPT|解密失败|AES/i.test(s)) return 'DECRYPT_FAIL';\n  if (/Minimax:/i.test(s) && /DeepSeek:/i.test(s)) return 'MODEL_BOTH_FAIL';\n  return 'UNKNOWN';\n}\n\nconst nodeErr = (typeof itemError === 'object' && itemError) || (typeof raw.error === 'object' && raw.error) || (typeof exec.error === 'object' && exec.error) || {};\nlet msg = formatErr(itemError && itemError.message) || formatErr(nodeErr.message) || formatErr(nodeErr.description) || formatErr(raw.message) || formatErr(itemError) || formatErr(raw.error) || '未知错误';\nif (!msg || msg === '[object Object]') msg = '未知错误';\n\ntry {\n  const parts = [];\n  try {\n    if ($('Minimax 识图').isExecuted) {\n      const mi = $('Minimax 识图').first();\n      let es = '';\n      try {\n        const em = (mi && mi.error && mi.error.message) || (mi && mi.json && (mi.json.message || mi.json.error || mi.json.error_msg)) || '';\n        es = typeof em === 'object' ? (em.message || JSON.stringify(em).slice(0, 80)) : String(em || '');\n      } catch (e2) {}\n      if (!es || es === '[object Object]') {\n        try {\n          const st = mi && mi.json && (mi.json.statusCode || mi.json.status);\n          if (st) es = 'HTTP ' + st;\n        } catch (e3) {}\n      }\n      if (!es || es === '[object Object]') es = '失败';\n      if ($('DeepSeek 识图').isExecuted) parts.push('Minimax:' + es.slice(0, 80));\n    }\n  } catch (e) {}\n  try {\n    if ($('DeepSeek 识图').isExecuted) {\n      const di = $('DeepSeek 识图').first();\n      let es = '';\n      try {\n        const em = (di && di.error && di.error.message) || (di && di.json && (di.json.message || di.json.error || di.json.error_msg)) || '';\n        es = typeof em === 'object' ? (em.message || JSON.stringify(em).slice(0, 80)) : String(em || '');\n      } catch (e2) {}\n      if (!es || es === '[object Object]') {\n        try {\n          const st = di && di.json && (di.json.statusCode || di.json.status);\n          if (st) es = 'HTTP ' + st;\n        } catch (e3) {}\n      }\n      if (!es || es === '[object Object]') es = '失败';\n      parts.push('DeepSeek:' + es.slice(0, 80));\n    }\n  } catch (e) {}\n  if (parts.length) msg = parts.join('；');\n} catch (e) {}\n\nlet lastNode = '未知节点';\ntry { if (typeof $prevNode !== 'undefined' && $prevNode && $prevNode.name) lastNode = $prevNode.name; } catch (e) {}\nlet kind = '流程';\ntry { if ($('表单上传识图').isExecuted || $('Webhook 微信图片').isExecuted) kind = '识图'; } catch (e) {}\ntry { if ($('表单上传表格').isExecuted) kind = '表格'; } catch (e) {}\n\nconst code = classify(msg);\nconst short = '❌' + kind + '失败[' + code + ']：' + String(msg).slice(0, 180);\n\nfunction pickBinary() {\n  const names = ['准备图片请求', '规范化微信图片', '规范化表单图片'];\n  for (const name of names) {\n    try {\n      if (!$(name).isExecuted) continue;\n      const it = $(name).first();\n      if (it && it.binary && it.binary.data) {\n        return { data: it.binary.data };\n      }\n    } catch (e) {}\n  }\n  return undefined;\n}\nconst binary = pickBinary();\nconst out = {\n  json: {\n    telegramText: short,\n    readableText: short,\n    report: short,\n    lastNode,\n    errorMessage: String(msg),\n    errorCode: code,\n    hasImage: !!binary,\n  },\n};\nif (binary) out.binary = binary;\nreturn [out];\n"
+      },
+      "id": "7b9670bf-198d-4535-b1fa-9bf9948f4112",
+      "name": "整理失败消息",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1744,
+        88
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.telegramText || $json.readableText || \"【处理失败】\" }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "2316795c-e16c-45cd-b220-6aac50027987",
+      "name": "Telegram 失败通知",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1968,
+        88
+      ],
+      "webhookId": "31e3e1f6-b9ea-4a7d-96ad-b0bf24b03e63",
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Telegram Bot (recognize push)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wechat-image",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "79ec5bb0-4bf3-4995-9e9d-665eb55cfbe8",
+      "name": "Webhook 微信图片",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -48,
+        -104
+      ],
+      "webhookId": "0e01b7581a4840a3bf15772465135add"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== 微信群图片准入配置（后续在这里改规则）=====\nconst CONFIG = {\n  // 非空则必须命中其一；空数组 = 暂不限制（骨架阶段放行全部群）\n  allowedGroupNames: [],\n  allowedGroupIds: [],\n  // 非空则必须命中其一；空 = 不限制发送者\n  allowedSenderIds: [],\n  allowedSenderNames: [],\n  requireChatType: 'group',   // 设为 '' 可关闭聊天类型检查\n  requireMsgType: 'image',    // 设为 '' 可关闭消息类型检查\n  requireSource: 'wechat',     // 设为 '' 可关闭来源检查\n  keywordInText: '',          // 非空则 text 需包含该关键词\n};\n// ==============================================\n\nconst body = items[0].json || {};\n// webhook 节点常把 body 放在 json 根或 body 字段\nconst msg = body.body && typeof body.body === 'object' ? Object.assign({}, body, body.body) : body;\n\nconst reasons = [];\nconst chatType = String(msg.chatType || msg.chat_type || '').trim();\nconst msgType = String(msg.msgType || msg.msg_type || '').trim();\nconst source = String(msg.source || '').trim();\nconst groupName = String(msg.groupName || msg.group_name || '').trim();\nconst groupId = String(msg.groupId || msg.group_id || '').trim();\nconst senderId = String(msg.senderId || msg.sender_id || '').trim();\nconst senderName = String(msg.senderName || msg.sender_name || '').trim();\nconst text = String(msg.text || msg.content || '');\nconst msgid = msg.msgid || msg.msgId || msg.messageId || null;\nconst imageBase64 = msg.imageBase64 || msg.image_base64 || '';\nconst imageUrl = msg.imageUrl || msg.image_url || '';\n\nif (CONFIG.requireSource && source !== CONFIG.requireSource) {\n  reasons.push('source 不匹配，期望 ' + CONFIG.requireSource + '，实际 ' + (source || '(空)'));\n}\nif (CONFIG.requireChatType && chatType !== CONFIG.requireChatType) {\n  reasons.push('chatType 不匹配，期望 ' + CONFIG.requireChatType + '，实际 ' + (chatType || '(空)'));\n}\nif (CONFIG.requireMsgType && msgType !== CONFIG.requireMsgType) {\n  reasons.push('msgType 不匹配，期望 ' + CONFIG.requireMsgType + '，实际 ' + (msgType || '(空)'));\n}\nif (CONFIG.allowedGroupIds.length) {\n  if (!groupId || !CONFIG.allowedGroupIds.includes(groupId)) reasons.push('groupId 不在白名单');\n}\nif (CONFIG.allowedGroupNames.length) {\n  if (!groupName || !CONFIG.allowedGroupNames.includes(groupName)) reasons.push('groupName 不在白名单');\n}\nif (CONFIG.allowedSenderIds.length) {\n  if (!senderId || !CONFIG.allowedSenderIds.includes(senderId)) reasons.push('senderId 不在白名单');\n}\nif (CONFIG.allowedSenderNames.length) {\n  if (!senderName || !CONFIG.allowedSenderNames.includes(senderName)) reasons.push('senderName 不在白名单');\n}\nif (CONFIG.keywordInText) {\n  if (!text.includes(CONFIG.keywordInText)) reasons.push('text 未包含关键词');\n}\nif (!imageBase64 && !imageUrl) {\n  reasons.push('缺少 imageBase64 / imageUrl');\n}\n\nconst accepted = reasons.length === 0;\nreturn [{\n  json: {\n    accepted,\n    reason: accepted ? 'ok' : reasons.join('；'),\n    msgid,\n    source,\n    chatType,\n    groupName,\n    groupId,\n    senderName,\n    senderId,\n    msgType,\n    text,\n    imageBase64,\n    imageUrl,\n    instruction: text || '',\n  },\n}];"
+      },
+      "id": "b4a993d1-6eae-4d36-8026-9924c0b8f27f",
+      "name": "微信来源判断",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        176,
+        -104
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "enableResponseOutput": true,
+        "respondWith": "json",
+        "responseBody": "={{ { accepted: $json.accepted === true, reason: $json.reason || \"\", msgid: $json.msgid || null } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "0e478d2b-caf2-40d8-b846-099fec295822",
+      "name": "Respond 微信Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        400,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const j = items[0].json || {};\nif (!j.accepted) {\n  // 未通过：静默结束（Webhook 已回 accepted:false），不打 Telegram\n  return [];\n}\nreturn items;"
+      },
+      "id": "d4d3c9da-97e8-4fb9-a454-22b4b6899cc7",
+      "name": "微信放行继续",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = items[0];\nconst j = item.json || {};\nlet b64 = String(j.imageBase64 || '').trim();\nlet mime = String(j.imageMime || '').trim() || 'application/octet-stream';\nlet fileName = String(j.imageFileName || j.fileName || 'wechat.bin');\n\nfunction detectFmt(buf) {\n  if (!buf || buf.length < 12) return 'bin';\n  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';\n  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';\n  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'gif';\n  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46\n      && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'webp';\n  if (buf[0] === 0x77 && buf[1] === 0x78 && buf[2] === 0x67 && buf[3] === 0x66) return 'wxgf';\n  if (buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0x00 && buf[3] === 0x01) return 'hevc';\n  if (buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0x01) return 'hevc';\n  if (buf[0] === 0x42 && buf[1] === 0x4d) return 'bmp';\n  return 'bin';\n}\nconst MIME = { jpg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };\nconst EXT = { jpg: 'jpg', png: 'png', gif: 'gif', webp: 'webp' };\n\nif (b64) {\n  const m = b64.match(/^data:([^;]+);base64,(.*)$/i);\n  if (m) {\n    mime = m[1] || mime;\n    b64 = m[2];\n  }\n  b64 = b64.replace(/\\s/g, '');\n} else if (j.imageUrl) {\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url: j.imageUrl,\n    encoding: 'arraybuffer',\n    returnFullResponse: true,\n  });\n  const buf0 = Buffer.from(resp.body);\n  b64 = buf0.toString('base64');\n  const ct = (resp.headers && (resp.headers['content-type'] || resp.headers['Content-Type'])) || '';\n  if (ct) mime = String(ct).split(';')[0].trim() || mime;\n  try {\n    const u = new URL(j.imageUrl);\n    const baseName = u.pathname.split('/').pop() || 'wechat';\n    fileName = baseName.includes('.') ? baseName : baseName + '.bin';\n  } catch (e) {}\n} else {\n  throw new Error('FMT_INVALID: 规范化微信图片失败：缺 imageBase64/imageUrl');\n}\n\nif (!b64 || b64.length < 32) throw new Error('FMT_INVALID: 图片数据过短或无效');\n\nconst buf = Buffer.from(b64, 'base64');\nconst fmt = detectFmt(buf);\nif (!MIME[fmt]) {\n  throw new Error(\n    'FMT_INVALID: 微信图片格式无法识别（检测为 ' + fmt + '，字节=' + buf.length\n    + '）。常见原因：wxgf/HEVC 未在本机转成 JPEG。请确认监控已更新并重新发图。'\n  );\n}\nmime = MIME[fmt];\nconst ext = EXT[fmt];\nif (!fileName.includes('.') || /\\.(hevc|bin|dat|wxgf|bmp)$/i.test(fileName)) {\n  fileName = 'wechat.' + ext;\n} else {\n  fileName = fileName.replace(/\\.[^.]+$/, '.' + ext);\n}\n\nreturn [{\n  json: {\n    source: 'wechat:' + (j.groupName || j.groupId || 'group'),\n    instruction: j.instruction || j.text || '',\n    msgid: j.msgid,\n    groupName: j.groupName,\n    senderName: j.senderName,\n    mimeType: mime,\n    bytes: buf.length,\n    imageFormat: fmt,\n    decryptedFormat: j.decryptedFormat || '',\n  },\n  binary: {\n    data: {\n      data: b64,\n      mimeType: mime,\n      fileName,\n      fileExtension: ext,\n    },\n  },\n}];\n"
+      },
+      "id": "b4907d1c-cd05-42c5-bc1b-773934fad1d1",
+      "name": "规范化微信图片",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        848,
+        -176
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "8c801b6a-ab09-4dd4-8dc9-2f5643df6a8a",
+      "name": "组装识图写表",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        360
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const j = items[0].json || {};\nconst text = String(j.readableText || j.report || '');\nconst provider = j.provider || 'minimax';\nconst summary = ('[' + provider + '] ' + text.split('\\n').map(s => s.trim()).filter(Boolean).slice(0, 2).join(' / ')).slice(0, 120);\nlet source = 'image-form';\nlet group = '';\nlet sender = '';\nlet msgid = '';\nlet rawFile = '';\ntry {\n  const w = $('规范化微信图片').first().json;\n  source = 'wechat';\n  group = w.groupName || '';\n  sender = w.senderName || '';\n  msgid = w.msgid || '';\n} catch (e) {}\ntry {\n  if (!group) {\n    const f = $('规范化表单图片').first().json;\n    source = 'image-form';\n    rawFile = f.source || '';\n  }\n} catch (e) {}\nreturn [{\n  json: Object.assign({}, j, {\n    provider,\n    appendBody: {\n      time: new Date().toISOString().replace('T', ' ').slice(0, 19),\n      source,\n      group,\n      sender,\n      msgid,\n      status: 'success',\n      provider,\n      summary,\n      readable_text: text,\n      raw_file: rawFile,\n    },\n  }),\n}];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "5ff3ed83-d608-4d2b-a3fd-90bac32af487",
+      "name": "HTTP 写入识图表格",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1220,
+        360
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://YOUR_N8N_HOST:5678/append",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.appendBody }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "c9da207d-d57c-487f-bd32-6309f90e6180",
+      "name": "识图短通知文案",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        360
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\nconst j = items[0].json || {};\nfunction formatAppendError(j) {\n  const parts = [];\n  const push = (v) => {\n    if (v == null || v === '') return;\n    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {\n      const s = String(v).trim();\n      if (s && s !== '[object Object]') parts.push(s);\n      return;\n    }\n    if (typeof v === 'object') {\n      if (v.message) push(v.message);\n      if (v.description) push(v.description);\n      if (v.error) push(v.error);\n      if (v.code) push(v.code);\n      if (v.statusCode || v.status) push('HTTP ' + (v.statusCode || v.status));\n      if (v.cause) push(v.cause);\n      // axios-ish\n      if (v.response && (v.response.status || v.response.statusText)) {\n        push('HTTP ' + (v.response.status || '') + ' ' + (v.response.statusText || ''));\n      }\n      if (!parts.length) {\n        try { const s = JSON.stringify(v); if (s && s !== '{}') parts.push(s.slice(0, 160)); } catch (e) {}\n      }\n    }\n  };\n  push(j && j.error);\n  push(j && j.message);\n  push(j && j.description);\n  if (j && j.name && String(j.name) !== 'Error') push(j.name);\n  // connection refused common when append_api down\n  const joined = parts.join(' | ').replace(/\\s+/g, ' ').trim();\n  if (!joined) return '本地写表服务无响应（请确认本机 8787 append_api 已启动）';\n  if (/ECONNREFUSED|connect ECONNREFUSED|socket hang up|ETIMEDOUT|fetch failed|EHOSTUNREACH/i.test(joined)) {\n    return '连不上写表服务 YOUR_LAN_HOST:8787（append_api 未启动或防火墙拦截）：' + joined.slice(0, 100);\n  }\n  return joined.slice(0, 160);\n}const wrote = j.ok === true || typeof j.row === 'number';\nlet _prov = 'minimax';\ntry { _prov = $('组装识图写表').first().json.provider || $('整理识图结果').first().json.provider || _prov; } catch (e) {}\nconst _tag = _prov === 'deepseek' ? 'DeepSeek' : 'Minimax';\nconst telegramText = wrote\n  ? '✅识图成功（' + _tag + '），已写入本地表格'\n  : '⚠️识图成功（' + _tag + '），但写入表格失败：' + formatAppendError(j);\n\nlet binary = undefined;\ntry {\n  const prep = $('准备图片请求').first();\n  if (prep && prep.binary && prep.binary.data) {\n    binary = { data: prep.binary.data };\n  }\n} catch (e) {}\n\nconst out = { json: { telegramText, appendOk: !!wrote, appendResult: j, hasImage: !!binary } };\nif (binary) out.binary = binary;\nreturn [out];\n"
+      }
+    },
+    {
+      "id": "63e0a379-2a2b-4ccb-90f8-5daf67b20ddb",
+      "name": "组装表格写表",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const j = items[0].json || {};\nconst text = String(j.readableText || j.report || '');\nconst summary = text.split('\\n').map(s => s.trim()).filter(Boolean).slice(0, 2).join(' / ').slice(0, 120);\nlet rawFile = '';\ntry { rawFile = $('规范化表单表格').first().json.source || ''; } catch (e) {}\nreturn [{\n  json: Object.assign({}, j, {\n    appendBody: {\n      time: new Date().toISOString().replace('T', ' ').slice(0, 19),\n      source: 'excel-form',\n      group: '',\n      sender: '',\n      msgid: '',\n      status: 'success',\n      summary,\n      readable_text: text,\n      raw_file: rawFile,\n    },\n  }),\n}];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "fe602906-5a71-442d-8f3b-e1a0354a1dbc",
+      "name": "HTTP 写入解析表格",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1420,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://YOUR_N8N_HOST:5678/append",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.appendBody }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "63648d89-5001-43dc-9872-5773662f060a",
+      "name": "解析短通知文案",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1640,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "\nconst j = items[0].json || {};\nfunction formatAppendError(j) {\n  const parts = [];\n  const push = (v) => {\n    if (v == null || v === '') return;\n    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {\n      const s = String(v).trim();\n      if (s && s !== '[object Object]') parts.push(s);\n      return;\n    }\n    if (typeof v === 'object') {\n      if (v.message) push(v.message);\n      if (v.description) push(v.description);\n      if (v.error) push(v.error);\n      if (v.code) push(v.code);\n      if (v.statusCode || v.status) push('HTTP ' + (v.statusCode || v.status));\n      if (v.cause) push(v.cause);\n      // axios-ish\n      if (v.response && (v.response.status || v.response.statusText)) {\n        push('HTTP ' + (v.response.status || '') + ' ' + (v.response.statusText || ''));\n      }\n      if (!parts.length) {\n        try { const s = JSON.stringify(v); if (s && s !== '{}') parts.push(s.slice(0, 160)); } catch (e) {}\n      }\n    }\n  };\n  push(j && j.error);\n  push(j && j.message);\n  push(j && j.description);\n  if (j && j.name && String(j.name) !== 'Error') push(j.name);\n  // connection refused common when append_api down\n  const joined = parts.join(' | ').replace(/\\s+/g, ' ').trim();\n  if (!joined) return '本地写表服务无响应（请确认本机 8787 append_api 已启动）';\n  if (/ECONNREFUSED|connect ECONNREFUSED|socket hang up|ETIMEDOUT|fetch failed|EHOSTUNREACH/i.test(joined)) {\n    return '连不上写表服务 YOUR_LAN_HOST:8787（append_api 未启动或防火墙拦截）：' + joined.slice(0, 100);\n  }\n  return joined.slice(0, 160);\n}const wrote = j.ok === true || typeof j.row === 'number';\nconst telegramText = wrote\n  ? '【解析成功】已写入本地表格'\n  : '【解析成功】但写入表格失败：' + formatAppendError(j);\nreturn [{ json: { telegramText, appendOk: !!wrote, appendResult: j } }];\n"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst bin = item.binary && item.binary.data;\nif (!bin) {\n  throw new Error('没有可预览的图片二进制数据');\n}\nconst buf = await this.helpers.getBinaryDataBuffer(0, 'data');\nconst b64 = buf.toString('base64');\nconst mime = bin.mimeType || 'image/jpeg';\nconst name = bin.fileName || 'uploaded-image';\nconst safeName = String(name).replace(/[<>&\"]/g, '');\nconst html = `<div style=\"max-width:760px;margin:24px auto;font-family:'Open Sans',system-ui,sans-serif;text-align:center;padding:0 12px\">\n  <h1 style=\"font-size:22px;color:#525356;font-weight:600;margin:0 0 8px\">已收到图片</h1>\n  <p style=\"color:#7E8186;font-size:14px;margin:0 0 20px;line-height:1.5\">正在识别中，结果会推送到 Telegram。<br/>下方窗口可查看本次上传的原图。</p>\n  <div style=\"background:#fff;border:1px solid #dbdfe7;border-radius:8px;padding:16px;box-shadow:0 4px 16px rgba(99,77,255,.06)\">\n    <img src=\"data:${mime};base64,${b64}\" alt=\"${safeName}\" style=\"max-width:100%;max-height:70vh;height:auto;border-radius:4px;object-fit:contain\"/>\n    <p style=\"margin:12px 0 0;color:#7E8186;font-size:12px\">${safeName}</p>\n  </div>\n</div>`;\nreturn [{\n  json: {\n    ...item.json,\n    previewHtml: html,\n  },\n  binary: item.binary,\n}];"
+      },
+      "id": "8b082837-b3fd-4b19-aa8c-98a6a3b121df",
+      "name": "生成图片预览HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1072,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "showText",
+        "responseText": "={{ $json.previewHtml }}",
+        "options": {
+          "formTitle": "上传图片预览"
+        }
+      },
+      "id": "3954b084-52f9-4791-8954-8bea6ed50d0b",
+      "name": "表单结束-图片预览",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.5,
+      "position": [
+        1296,
+        1120
+      ],
+      "webhookId": "326d7c8e067942a58f801f955487299b"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendPhoto",
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "caption": "={{ '原图 · ' + ($json.telegramText || '识图') }}",
+          "appendAttribution": false
+        }
+      },
+      "id": "b427ab7c-5ff5-492f-9589-662b48befa08",
+      "name": "Telegram 推送识图照片",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1544,
+        424
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Telegram Bot (recognize push)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendPhoto",
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "caption": "={{ '原图 · ' + ($json.telegramText || '失败').slice(0, 200) }}",
+          "appendAttribution": false
+        }
+      },
+      "id": "5198225c-f9aa-4dcd-99b2-f732732c4fb2",
+      "name": "Telegram 失败照片",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1768,
+        88
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Telegram Bot (recognize push)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $('准备图片请求').item.json.deepseekRequestBody }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "75c1db6a-d1a8-45b4-bd2b-e5555a6533fe",
+      "name": "DeepSeek 识图",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1520,
+        -40
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "DeepSeek API Key"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 4000
+    }
+  ],
+  "connections": {
+    "Minimax Chat": {
+      "main": [
+        [
+          {
+            "node": "整理结果",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "准备 Prompt": {
+      "main": [
+        [
+          {
+            "node": "Minimax Chat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Spreadsheet File": {
+      "main": [
+        [
+          {
+            "node": "准备 Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "准备图片请求": {
+      "main": [
+        [
+          {
+            "node": "Minimax 识图",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Minimax 识图": {
+      "main": [
+        [
+          {
+            "node": "整理识图结果",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "DeepSeek 识图",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "表单上传识图": {
+      "main": [
+        [
+          {
+            "node": "规范化表单图片",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "规范化表单图片": {
+      "main": [
+        [
+          {
+            "node": "准备图片请求",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "生成图片预览HTML",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "整理识图结果": {
+      "main": [
+        [
+          {
+            "node": "组装识图写表",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "整理结果": {
+      "main": [
+        [
+          {
+            "node": "组装表格写表",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "表单上传表格": {
+      "main": [
+        [
+          {
+            "node": "规范化表单表格",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "规范化表单表格": {
+      "main": [
+        [
+          {
+            "node": "Spreadsheet File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram 推送表格": {
+      "main": [
+        []
+      ]
+    },
+    "Telegram 推送识图": {
+      "main": [
+        []
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "整理失败消息": {
+      "main": [
+        [
+          {
+            "node": "Telegram 失败照片",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook 微信图片": {
+      "main": [
+        [
+          {
+            "node": "微信来源判断",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "微信来源判断": {
+      "main": [
+        [
+          {
+            "node": "Respond 微信Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 微信Webhook": {
+      "main": [
+        [
+          {
+            "node": "微信放行继续",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "微信放行继续": {
+      "main": [
+        [
+          {
+            "node": "规范化微信图片",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "规范化微信图片": {
+      "main": [
+        [
+          {
+            "node": "准备图片请求",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "组装识图写表": {
+      "main": [
+        [
+          {
+            "node": "HTTP 写入识图表格",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP 写入识图表格": {
+      "main": [
+        [
+          {
+            "node": "识图短通知文案",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "识图短通知文案": {
+      "main": [
+        [
+          {
+            "node": "Telegram 推送识图照片",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "组装表格写表": {
+      "main": [
+        [
+          {
+            "node": "HTTP 写入解析表格",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP 写入解析表格": {
+      "main": [
+        [
+          {
+            "node": "解析短通知文案",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析短通知文案": {
+      "main": [
+        [
+          {
+            "node": "Telegram 推送表格",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram 失败通知": {
+      "main": [
+        []
+      ]
+    },
+    "生成图片预览HTML": {
+      "main": [
+        [
+          {
+            "node": "表单结束-图片预览",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "表单结束-图片预览": {
+      "main": [
+        []
+      ]
+    },
+    "Telegram 推送识图照片": {
+      "main": [
+        [
+          {
+            "node": "Telegram 推送识图",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram 失败照片": {
+      "main": [
+        [
+          {
+            "node": "Telegram 失败通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek 识图": {
+      "main": [
+        [
+          {
+            "node": "整理识图结果",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "整理失败消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "errorWorkflow": "zlv4DMcVAEqr135U"
+  },
+  "meta": {},
+  "active": false,
+  "staticData": null
+}
